@@ -1,0 +1,74 @@
+permissions:
+  contents: write
+
+name: Generate Key
+
+on:
+  schedule:
+    - cron: '0 16 * * *'  # Runs 12 midnight PH time (UTC+8)
+  workflow_dispatch:
+    inputs:
+      duration_type:
+        description: "Select key duration"
+        required: true
+        default: "days"
+        type: choice
+        options:
+          - days
+          - weeks
+          - months
+          - years
+      duration_value:
+        description: "Enter number of selected units (e.g., 1, 7, 30, 365)"
+        required: true
+        default: "1"
+        type: string
+
+jobs:
+  generate-key:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Generate Key with Retry
+        id: generate
+        run: |
+          pip install --upgrade pip
+          mkdir -p keys
+
+          DURATION_TYPE="${{ github.event.inputs.duration_type || 'days' }}"
+          DURATION_VALUE="${{ github.event.inputs.duration_value || '1' }}"
+
+          echo "Generating key with duration: $DURATION_VALUE $DURATION_TYPE"
+
+          ATTEMPTS=0
+          MAX_ATTEMPTS=5
+          KEY_FILE=""
+          until OUTPUT=$(python generatekey.py --type "$DURATION_TYPE" --value "$DURATION_VALUE")
+          do
+            ATTEMPTS=$((ATTEMPTS+1))
+            if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
+              echo "Key generation failed after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+            echo "Key generation failed. Retrying in 10 seconds..."
+            sleep 10
+          done
+
+          echo "$OUTPUT"
+          # Extract filename from output
+          KEY_FILE=$(echo "$OUTPUT" | grep "✅ Key generated:" | awk '{print $3}')
+          echo "key_file=$KEY_FILE" >> $GITHUB_OUTPUT
+
+      - name: Commit and Push Keys
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add keys/
+          git commit -m "Add key: ${{ steps.generate.outputs.key_file }}" || echo "No changes to commit"
+          git push
